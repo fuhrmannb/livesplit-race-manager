@@ -6,10 +6,12 @@ import (
 	connectv1 "github.com/fuhrmannb/livesplit-race-manager/livesplit/connect/v1"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/exp/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"sync"
 	"time"
 )
 
@@ -18,7 +20,9 @@ type LiveSplitManager struct {
 
 	Multiplexer multiplexerv1.DiscoveryServiceClient
 	Connect     connectv1.LiveSplitServiceClient
-	LiveSplits  map[string]*LiveSplit
+
+	liveSplits      map[string]*LiveSplit
+	liveSplitsMutex sync.Mutex
 
 	lsCreate chan string
 	lsUpdate chan *liveSplitUpdateMsg
@@ -70,7 +74,7 @@ func NewLiveSplitManager(opts LiveSplitManagerOpts) (*LiveSplitManager, error) {
 		conn:        conn,
 		Multiplexer: multiplexerv1.NewDiscoveryServiceClient(conn),
 		Connect:     connectv1.NewLiveSplitServiceClient(conn),
-		LiveSplits:  make(map[string]*LiveSplit),
+		liveSplits:  make(map[string]*LiveSplit),
 		lsCreate:    make(chan string, 100000),
 		lsDelete:    make(chan string, 100000),
 		lsUpdate:    make(chan *liveSplitUpdateMsg, 100000),
@@ -102,6 +106,12 @@ func NewLiveSplitManager(opts LiveSplitManagerOpts) (*LiveSplitManager, error) {
 	}()
 
 	return lsm, nil
+}
+
+func (lsm *LiveSplitManager) LiveSplits() []*LiveSplit {
+	lsm.liveSplitsMutex.Lock()
+	defer lsm.liveSplitsMutex.Unlock()
+	return maps.Values(lsm.liveSplits)
 }
 
 func (lsm *LiveSplitManager) Close() {
@@ -311,18 +321,22 @@ func (lsm *LiveSplitManager) updateLSLoop() {
 	for {
 		select {
 		case id := <-lsm.lsCreate:
-			lsm.LiveSplits[id] = &LiveSplit{
+			lsm.liveSplitsMutex.Lock()
+			lsm.liveSplits[id] = &LiveSplit{
 				ID:    id,
 				State: LiveSplitStateDisconnected,
 			}
+			lsm.liveSplitsMutex.Unlock()
 
 		case id := <-lsm.lsDelete:
-			delete(lsm.LiveSplits, id)
+			lsm.liveSplitsMutex.Lock()
+			delete(lsm.liveSplits, id)
+			lsm.liveSplitsMutex.Unlock()
 
 		case newP := <-lsm.lsUpdate:
 			id := newP.ID
 
-			p, ok := lsm.LiveSplits[id]
+			p, ok := lsm.liveSplits[id]
 			if !ok {
 				continue
 			}
@@ -347,12 +361,16 @@ func (lsm *LiveSplitManager) updateLSLoop() {
 				p.Time = *newP.Time
 			}
 
-			lsm.LiveSplits[id] = clearLS(p)
+			ls := clearLS(p)
+			lsm.liveSplitsMutex.Lock()
+			lsm.liveSplits[id] = ls
+			lsm.liveSplitsMutex.Unlock()
 
 			if oldState != LiveSplitStateWaitingForLiveSplit && p.State == LiveSplitStateWaitingForLiveSplit {
 				go lsm.checkLSConnection(id)
 			}
 		}
+
 	}
 }
 
@@ -382,7 +400,7 @@ func (lsm *LiveSplitManager) checkLSConnection(id string) {
 	for {
 		// Check if the multiplexer is still connected (LS still there)
 		// If not, stop the reconnection
-		p, ok := lsm.LiveSplits[id]
+		p, ok := lsm.liveSplits[id]
 		if !ok {
 			lsLog(id).Debug().Msg("gRPC multiplexer client disconnected")
 			return

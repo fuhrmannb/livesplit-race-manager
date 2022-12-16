@@ -10,7 +10,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
 	"html/template"
 	"io/fs"
@@ -47,16 +46,16 @@ func NewAPI(opts NewAPIOpts) error {
 	r.SetHTMLTemplate(t)
 
 	r.GET("/", func(c *gin.Context) {
-		lsValues := maps.Values(opts.LSM.LiveSplits)
-		slices.SortFunc(lsValues, func(i, j *LiveSplit) bool {
+		liveSplits := opts.LSM.LiveSplits()
+		slices.SortFunc(liveSplits, func(i, j *LiveSplit) bool {
 			return strings.ToLower(i.ID) < strings.ToLower(j.ID)
 		})
 
-		c.HTML(http.StatusOK, "html/status.gohtml", lsValues)
+		c.HTML(http.StatusOK, "html/status.gohtml", liveSplits)
 	})
 	r.GET("/api/v1/livesplits", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"livesplits": maps.Values(opts.LSM.LiveSplits),
+			"livesplits": opts.LSM.LiveSplits(),
 		})
 	})
 
